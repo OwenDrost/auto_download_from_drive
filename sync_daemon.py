@@ -542,9 +542,26 @@ class SyncDaemon:
             with open(self.transfers_path, 'w') as f:
                 json.dump(self.active_transfers, f, indent=2)
 
+    def _mark_download_pending(self, rule_id: str, source_file: str) -> None:
+        with self.state_lock:
+            rule_state = self.state["rules"].get(rule_id)
+            if not rule_state:
+                return
+            file_state = rule_state["files"].get(source_file)
+            if not file_state:
+                return
+
+            file_state["status"] = "pending"
+            file_state["last_error"] = None
+
+        self.save_state()
+
     def handle_download(self, rule_id: str, source_file: str, dest_path: str) -> None:
         if self.stop_event.is_set():
             return
+
+        # Sync state for retry tasks: once picked up and running again, it should no longer stay in "failed".
+        self._mark_download_pending(rule_id, source_file)
 
         start_time = time.time()
         self.log_event(EventType.DOWNLOAD, "download started", rule_id=rule_id, source_file=source_file, dest_path=dest_path)
@@ -595,6 +612,7 @@ class SyncDaemon:
                         return
 
                     if self._is_rc_port_conflict(combined_text) and attempt < startup_retry_limit:
+                        self._mark_download_pending(rule_id, source_file)
                         self.log_event(
                             EventType.DOWNLOAD,
                             "download startup retry on rc port conflict",
@@ -663,6 +681,7 @@ class SyncDaemon:
             except OSError as exc:
                 error_text = str(exc)
                 if self._is_rc_port_conflict(error_text) and attempt < startup_retry_limit:
+                    self._mark_download_pending(rule_id, source_file)
                     self.log_event(
                         EventType.DOWNLOAD,
                         "download startup retry on rc port conflict",
